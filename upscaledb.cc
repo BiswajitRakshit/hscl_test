@@ -32,7 +32,7 @@
 extern "C" {
   #include "locks/hfairlock.h"
   #include "rdtsc.h"
-  #include "hscl_common.h"
+  #include "common.h"
 }
 hfairlock_t ms_hfairlock;
 int         g_nthreads  = 0;

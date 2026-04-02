@@ -1,0 +1,36 @@
+# Object files
+*.o
+*.obj
+
+# Libraries
+*.a
+*.so
+*.so.*
+*.dylib
+
+# Executables / compiled binaries
+*.out
+*.exe
+ups_bench_hscl
+ups_bench_mutex
+
+# Build output / results
+results_hscl.txt
+results_mutex.txt
+
+# Database files
+*.db
+
+# Dependency files
+*.d
+
+# Compiled Python files
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor/IDE files
+.vscode/
+*.swp
+*.swo
+*~
