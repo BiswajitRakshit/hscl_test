@@ -13,6 +13,12 @@
 *.exe
 ups_bench_hscl
 ups_bench_mutex
+ups_bench_hscl_*
+ups_bench_mutex_*
+ups_bench_boost_*
+ups_bench_pthread_*
+ups_bench_ticket
+
 
 # Build output / results
 results_hscl.txt

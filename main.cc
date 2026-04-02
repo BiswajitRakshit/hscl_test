@@ -42,7 +42,7 @@
 extern "C" {
   #include "locks/hfairlock.h"
   #include "rdtsc.h"
-  #include "hscl_common.h"
+  #include "common.h"
 }
 extern hfairlock_t ms_hfairlock;
 extern int         g_nthreads;
@@ -1016,11 +1016,9 @@ struct Callable {
     // Register this thread with the H-SCL lock.
     // Threads 1..num_threads/2-1 → insert group (node 1)
     // Threads num_threads/2..num_threads-1 → find group (node 2)
+    int weight = prio_to_weight[0 + 20];  // nice=0, equal weight
     int parent_node = (id < g_nthreads / 2) ? 1 : 2;
-    int weight = (parent_node == 1) ? prio_to_weight[2 + 20]   // insert: nice=+2, w=655
-                                    : prio_to_weight[-2 + 20];  // find:   nice=-2, w=1586
     hfairlock_thread_init(&ms_hfairlock, weight, parent_node);
-
 #endif
     while (generator->execute())
       ;
@@ -1085,8 +1083,8 @@ run_single_test(Configuration *conf)
 
   hfairlock_init(&ms_hfairlock, g_hierarchy);
 
-  // Thread 0 is in the insert group (node 1) → nice=+3
-  int weight0 = prio_to_weight[2 + 20];  // insert group: nice=+2, w=655
+  // Register thread 0 (insert group, node 1)
+  int weight0 = prio_to_weight[0 + 20];
   hfairlock_thread_init(&ms_hfairlock, weight0, 1);
   // ─────────────────────────────────────────────────────────────────────────
 #endif
