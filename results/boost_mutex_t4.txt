@@ -8,16 +8,16 @@ but WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 APL Apahe Public License for more details.
 
-Configuration: --seed=1775155206 --num-threads=4 --key=uint32 --recsize=1024 --distribution=random --stop-seconds=30 --find-pct=50 
+Configuration: --seed=1775560437 --num-threads=4 --key=uint32 --recsize=1024 --distribution=random --stop-seconds=30 --find-pct=50 
 
 [OK] 
-	total elapsed time (sec)                 30.000283
-	upscaledb elapsed time (sec)             117.647068
-	upscaledb total_#ops                     2467885
-	upscaledb insert_#ops                    1234839 (15340.959898/sec)
-	upscaledb insert_throughput              15769880.981492/sec
-	upscaledb insert_latency (min, avg, max) 0.000001, 0.000065, 0.029468
-	upscaledb find_#ops                      1233040 (33187.161980/sec)
-	upscaledb find_throughput                1212.678234/sec
-	upscaledb find_latency (min, avg, max)   0.000000, 0.000030, 0.125152
-	upscaledb filesize                       1369915392
+	total elapsed time (sec)                 30.000433
+	upscaledb elapsed time (sec)             117.982442
+	upscaledb total_#ops                     2464589
+	upscaledb insert_#ops                    1233225 (15269.117904/sec)
+	upscaledb insert_throughput              15695991.342580/sec
+	upscaledb insert_latency (min, avg, max) 0.000001, 0.000065, 0.023752
+	upscaledb find_#ops                      1231358 (33086.363824/sec)
+	upscaledb find_throughput                1210.646464/sec
+	upscaledb find_latency (min, avg, max)   0.000000, 0.000030, 0.013752
+	upscaledb filesize                       1367638016

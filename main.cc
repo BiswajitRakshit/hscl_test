@@ -50,6 +50,90 @@ extern node_t     *g_hierarchy;
 #endif
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Path to the H-SCL hierarchy file (set by --hierarchy CLI arg; empty = default 2-group)
+static std::string g_hierarchy_file;
+
+#if defined(HFAIRLOCK)
+// ── Hierarchy file parser ─────────────────────────────────────────────────────
+// File format (one integer per line):
+//   line 1  : num_nodes   (total nodes including root=0)
+//   lines 2 .. num_nodes : parent of node i  (for i = 1 .. num_nodes-1)
+//   remaining lines      : parent node assigned to thread 0, 1, 2, ...
+//
+// Special case: num_nodes == 1 means flat (all threads → root 0).
+// If the file has fewer thread entries than num_threads, remaining threads
+// default to root (node 0).
+//
+// Returns a vector of length nthreads; also allocates g_hierarchy.
+static std::vector<int>
+parse_hierarchy_file(const std::string &path, int nthreads)
+{
+    std::vector<int> tparents(nthreads, 0); // default: all → root
+
+    if (path.empty()) {
+        // ── legacy default: 2-group split (insert=1, find=2) ──────────────
+        ull now = rdtsc();
+        g_hierarchy = (node_t *)calloc(3, sizeof(node_t));
+        g_hierarchy[0].id = 0; g_hierarchy[0].parent = 0;
+        g_hierarchy[0].banned_until = now;
+        g_hierarchy[1].id = 1; g_hierarchy[1].parent = 0;
+        g_hierarchy[1].banned_until = now;
+        g_hierarchy[2].id = 2; g_hierarchy[2].parent = 0;
+        g_hierarchy[2].banned_until = now;
+        for (int i = 0; i < nthreads; i++)
+            tparents[i] = (i < nthreads / 2) ? 1 : 2;
+        printf("  [hierarchy] default 2-group (insert→1, find→2)\n");
+        return tparents;
+    }
+
+    FILE *fp = fopen(path.c_str(), "r");
+    if (!fp) {
+        fprintf(stderr, "[FAIL] cannot open hierarchy file '%s': %s\n",
+                path.c_str(), strerror(errno));
+        exit(1);
+    }
+
+    int num_nodes = 1;
+    if (fscanf(fp, "%d", &num_nodes) != 1 || num_nodes < 1) {
+        fprintf(stderr, "[FAIL] bad hierarchy file '%s'\n", path.c_str());
+        fclose(fp); exit(1);
+    }
+
+    ull now = rdtsc();
+    g_hierarchy = (node_t *)calloc(num_nodes, sizeof(node_t));
+    g_hierarchy[0].id = 0; g_hierarchy[0].parent = 0;
+    g_hierarchy[0].banned_until = now;
+
+    for (int i = 1; i < num_nodes; i++) {
+        int parent = 0;
+        if (fscanf(fp, "%d", &parent) != 1) parent = 0;
+        g_hierarchy[i].id     = i;
+        g_hierarchy[i].parent = parent;
+        g_hierarchy[i].banned_until = now;
+    }
+
+    // Read per-thread parent assignments (one per line until EOF)
+    for (int i = 0; i < nthreads; i++) {
+        int p = 0;
+        if (fscanf(fp, "%d", &p) != 1) break; // default to 0 for remaining
+        if (p < 0 || p >= num_nodes) {
+            fprintf(stderr, "[WARN] hierarchy: thread %d parent %d out of range "
+                    "[0,%d) — clamping to 0\n", i, p, num_nodes);
+            p = 0;
+        }
+        tparents[i] = p;
+    }
+    fclose(fp);
+
+    printf("  [hierarchy] loaded '%s': %d nodes, threads→", path.c_str(), num_nodes);
+    for (int i = 0; i < nthreads; i++) printf("%d%s", tparents[i], i+1<nthreads?",":"");
+    printf("\n");
+
+    return tparents;
+}
+// ─────────────────────────────────────────────────────────────────────────────
+#endif
+
 #define ARG_HELP                                1
 #define ARG_VERBOSE                             2
 #define ARG_QUIET                               3
@@ -104,6 +188,7 @@ extern node_t     *g_hierarchy;
 #define ARG_POSIX_FADVICE                       71
 #define ARG_SIMULATE_CRASHES                    72
 #define ARG_FLUSH_TXN_IMMEDIATELY               73
+#define ARG_HIERARCHY_FILE                      74  // H-SCL hierarchy spec file
 
 /*
  * command line parameters
@@ -440,6 +525,13 @@ static option_t opts[] = {
     "flush-txn-immediately",
     "Immediately flushes transactions after they are committed",
     0 },
+  {
+    ARG_HIERARCHY_FILE,
+    0,
+    "hierarchy",
+    "H-SCL hierarchy file (flat.txt / two_level.txt / privileged.txt).\n"
+    "\t  Format: line1=num_nodes, next N-1 lines=parent[i], then one line per thread.",
+    GETOPTS_NEED_ARGUMENT },
   {0, 0}
 };
 
@@ -831,6 +923,13 @@ parse_config(int argc, char **argv, Configuration *c)
     else if (opt == ARG_FLUSH_TXN_IMMEDIATELY) {
       c->flush_txn_immediately = true;
     }
+    else if (opt == ARG_HIERARCHY_FILE) {
+#if defined(HFAIRLOCK)
+      g_hierarchy_file = param ? param : "";
+#else
+      printf("[WARN] --hierarchy ignored (build was not compiled with -DHFAIRLOCK)\n");
+#endif
+    }
     else if (opt == ARG_READ_ONLY) {
       c->read_only = true;
     }
@@ -997,9 +1096,9 @@ print_metrics(Metrics *metrics, Configuration *conf)
 // Threads 1..N/2-1 → insert group (node 1), N/2..N-1 → find group (node 2).
 // ─────────────────────────────────────────────────────────────────────────────
 struct Callable {
-  Callable(int id_, Configuration *conf_)
+  Callable(int id_, Configuration *conf_, int parent_node_ = -1)
     : conf(conf_), db(new UpscaleDatabase(id_, conf_)), id(id_),
-        generator(0) {
+        generator(0), parent_node(parent_node_) {
     if (conf->filename.empty())
       generator = new RuntimeGenerator(id_, conf_, db, false);
     else
@@ -1013,12 +1112,12 @@ struct Callable {
 
   void operator()() {
 #if defined(HFAIRLOCK)
-    // Register this thread with the H-SCL lock.
-    // Threads 1..num_threads/2-1 → insert group (node 1)
-    // Threads num_threads/2..num_threads-1 → find group (node 2)
+    // Register this thread with the H-SCL lock using the node assigned
+    // by the hierarchy file.  parent_node==-1 means "use default split".
     int weight = prio_to_weight[0 + 20];  // nice=0, equal weight
-    int parent_node = (id < g_nthreads / 2) ? 1 : 2;
-    hfairlock_thread_init(&ms_hfairlock, weight, parent_node);
+    int pn = (parent_node >= 0) ? parent_node
+                                : ((id < g_nthreads / 2) ? 1 : 2);
+    hfairlock_thread_init(&ms_hfairlock, weight, pn);
 #endif
     while (generator->execute())
       ;
@@ -1032,6 +1131,7 @@ struct Callable {
   Database *db;
   int id;
   ::Generator *generator;
+  int parent_node;  // ← node assigned by hierarchy file (-1 = default)
 };
 
 static void
@@ -1064,28 +1164,18 @@ static bool
 run_single_test(Configuration *conf)
 {
 #if defined(HFAIRLOCK)
-  // ── H-SCL lock initialisation ────────────────────────────────────────────
-  // Build a 3-node hierarchy: root(0) → inserts(1), finds(2)
-  // Threads 0..num_threads/2-1 go under node 1 (inserts)
-  // Threads num_threads/2..num_threads-1 go under node 2 (finds)
-  g_nthreads  = conf->num_threads;
-  g_hierarchy = (node_t *)calloc(3, sizeof(node_t));
-  ull now = rdtsc();
-  // node 0: root
-  g_hierarchy[0].id = 0; g_hierarchy[0].parent = 0;
-  g_hierarchy[0].banned_until = now; g_hierarchy[0].slice = 0;
-  // node 1: insert group
-  g_hierarchy[1].id = 1; g_hierarchy[1].parent = 0;
-  g_hierarchy[1].banned_until = now; g_hierarchy[1].slice = 0;
-  // node 2: find group
-  g_hierarchy[2].id = 2; g_hierarchy[2].parent = 0;
-  g_hierarchy[2].banned_until = now; g_hierarchy[2].slice = 0;
+  // ── H-SCL lock initialisation (hierarchy loaded from file or default) ──────
+  g_nthreads = conf->num_threads;
+
+  // parse_hierarchy_file allocates g_hierarchy and returns per-thread parents
+  std::vector<int> thread_parents =
+      parse_hierarchy_file(g_hierarchy_file, conf->num_threads);
 
   hfairlock_init(&ms_hfairlock, g_hierarchy);
 
-  // Register thread 0 (insert group, node 1)
+  // Register thread 0 in the context of the main thread
   int weight0 = prio_to_weight[0 + 20];
-  hfairlock_thread_init(&ms_hfairlock, weight0, 1);
+  hfairlock_thread_init(&ms_hfairlock, weight0, thread_parents[0]);
   // ─────────────────────────────────────────────────────────────────────────
 #endif
 
@@ -1096,7 +1186,12 @@ run_single_test(Configuration *conf)
   std::vector<boost::thread *> threads;
   std::vector<Callable *> callables;
   for (int i = 1; i < conf->num_threads; i++) {
-    Callable *c = new Callable(i, conf);
+#if defined(HFAIRLOCK)
+    int pn = thread_parents[i];
+#else
+    int pn = -1;
+#endif
+    Callable *c = new Callable(i, conf, pn);
     callables.push_back(c);
     threads.push_back(new boost::thread(thread_callback, c));
   }
