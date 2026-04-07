@@ -29,7 +29,8 @@ BENCH_ARGS = --distribution=random --key=uint32 \
              --find-pct=$(FIND_PCT) --no-progress \
              --stop-seconds=$(DURATION)
 
-.PHONY: all info build-objs clean run fairness
+.PHONY: all info build-objs clean run run-flat run-two-level run-privileged \
+        run-all-hierarchies fairness gen-hierarchies
 
 all: info build-objs \
      ups_bench_boost_mutex ups_bench_pthread_mutex \
@@ -90,6 +91,28 @@ ups_bench_hscl: main.cc upscaledb.cc hfairlock.o $(BENCH_OBJS)
 	$(CXX) $^ -o $@ $(OPTS) $(BENCH_INC) $(LIBS) $(COMMON_DEF) -DHFAIRLOCK
 
 
+# ── gen-hierarchies: generate per-thread-count hierarchy files ────────────────
+# Format: 3 nodes (root=0, insert_group=1, find_group=2), then T lines (one
+# per thread) assigning it to node 1 (inserts) or node 2 (finds).
+# This matches MAX_DEPTH=2 and the 3-node init in run_single_test().
+gen-hierarchies:
+	@mkdir -p hierarchy
+	@python3 -c "\
+counts = [4, 8, 16, 32, 64, 128, 256]; \
+[open('hierarchy/t%d.txt' % T, 'w').write( \
+    '3\n0\n0\n0\n' + \
+    ''.join('1\n' if i < T//2 else '2\n' for i in range(T))) \
+ for T in counts]; \
+print('Generated hierarchy/t{4,8,16,32,64,128,256}.txt') \
+"
+	@echo "  3 nodes: root=0, insert_group=1, find_group=2"
+	@echo "  First T/2 threads -> node 1 (inserts), last T/2 -> node 2 (finds)"
+
+
+# ── run: benchmark all locks ──────────────────────────────────────────────────
+# IMPORTANT: all loop logic is kept in ONE @-prefixed shell block joined by ;\
+# to prevent "unexpected end of file" from make splitting recipe lines into
+# separate shells.
 run: all
 	@echo "Pinning CPU..."
 	@mkdir -p results
@@ -99,7 +122,8 @@ run: all
 	for T in $(THREAD_COUNTS); do \
 	    for LOCK in boost_mutex pthread_mutex pthread_spin ticket hscl; do \
 	        if [ "$$LOCK" = "pthread_spin" ] && [ "$$T" -ge "$$NCORES" ]; then \
-	            echo ""; echo "=== $$LOCK  threads=$$T — SKIPPED (spinlock unsafe: threads>=cores) ==="; \
+	            echo ""; \
+	            echo "=== $$LOCK  threads=$$T -- SKIPPED (spinlock unsafe: threads>=cores) ==="; \
 	            continue; \
 	        fi; \
 	        echo ""; echo "=== $$LOCK  threads=$$T ==="; \
@@ -108,14 +132,72 @@ run: all
 	        rm -f test-ham.db test-ham.db.jrn0 test-ham.db.jrn1; \
 	        sleep 2; \
 	    done; \
-	done
+	done; \
+	echo ""; \
+	echo "Results saved to results/. Running analysis..."; \
+	python3 fairness_analysis.py --results-dir=results --auto
 
 
-	@echo ""; echo "Results saved to results/. Running analysis..."
-	@python3 fairness_analysis.py --results-dir=results --auto
+# ── run-flat / run-two-level / run-privileged ─────────────────────────────────
+run-flat: ups_bench_hscl
+	@echo "=== H-SCL with FLAT hierarchy ==="
+	@mkdir -p results/flat
+	sudo cpupower frequency-set -g performance 2>/dev/null || true
+	@export LD_LIBRARY_PATH=/usr/local/lib:$$LD_LIBRARY_PATH; \
+	for T in $(THREAD_COUNTS); do \
+	    echo ""; echo "--- hscl flat  threads=$$T ---"; \
+	    timeout 60 ./ups_bench_hscl --num-threads=$$T $(BENCH_ARGS) \
+	        2>&1 | tee results/flat/hscl_t$${T}.txt; \
+	    rm -f test-ham.db test-ham.db.jrn0 test-ham.db.jrn1; \
+	    sleep 2; \
+	done; \
+	echo "Done -- results in results/flat/"
+
+run-two-level: ups_bench_hscl
+	@echo "=== H-SCL with TWO-LEVEL hierarchy ==="
+	@mkdir -p results/two_level
+	sudo cpupower frequency-set -g performance 2>/dev/null || true
+	@export LD_LIBRARY_PATH=/usr/local/lib:$$LD_LIBRARY_PATH; \
+	for T in $(THREAD_COUNTS); do \
+	    echo ""; echo "--- hscl two_level  threads=$$T ---"; \
+	    timeout 60 ./ups_bench_hscl --num-threads=$$T $(BENCH_ARGS) \
+	        2>&1 | tee results/two_level/hscl_t$${T}.txt; \
+	    rm -f test-ham.db test-ham.db.jrn0 test-ham.db.jrn1; \
+	    sleep 2; \
+	done; \
+	echo "Done -- results in results/two_level/"
+
+run-privileged: ups_bench_hscl
+	@echo "=== H-SCL with PRIVILEGED hierarchy ==="
+	@mkdir -p results/privileged
+	sudo cpupower frequency-set -g performance 2>/dev/null || true
+	@export LD_LIBRARY_PATH=/usr/local/lib:$$LD_LIBRARY_PATH; \
+	for T in $(THREAD_COUNTS); do \
+	    echo ""; echo "--- hscl privileged  threads=$$T ---"; \
+	    timeout 60 ./ups_bench_hscl --num-threads=$$T $(BENCH_ARGS) \
+	        2>&1 | tee results/privileged/hscl_t$${T}.txt; \
+	    rm -f test-ham.db test-ham.db.jrn0 test-ham.db.jrn1; \
+	    sleep 2; \
+	done; \
+	echo "Done -- results in results/privileged/"
+
+# ── run-all-hierarchies ───────────────────────────────────────────────────────
+run-all-hierarchies: ups_bench_hscl
+	$(MAKE) run-flat
+	$(MAKE) run-two-level
+	$(MAKE) run-privileged
+	@echo ""
+	@echo "=== Flat hierarchy ==="
+	@python3 fairness_analysis.py --results-dir=results/flat --auto 2>/dev/null || true
+	@echo ""
+	@echo "=== Two-level hierarchy ==="
+	@python3 fairness_analysis.py --results-dir=results/two_level --auto 2>/dev/null || true
+	@echo ""
+	@echo "=== Privileged hierarchy ==="
+	@python3 fairness_analysis.py --results-dir=results/privileged --auto 2>/dev/null || true
 
 fairness:
-	@python3 plot_figures.py --results-dir=results 
+	@python3 plot_figures.py --results-dir=results
 
 clean:
 	rm -f *.o ups_bench_* test-ham.db* 2>/dev/null || true

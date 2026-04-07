@@ -8,16 +8,57 @@ but WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 APL Apahe Public License for more details.
 
-Configuration: --seed=1775155705 --num-threads=32 --key=uint32 --recsize=1024 --distribution=random --stop-seconds=30 --find-pct=50 
+Configuration: --seed=1775563572 --num-threads=32 --key=uint32 --recsize=1024 --distribution=random --stop-seconds=30 --find-pct=50 
 
 [OK] 
-	total elapsed time (sec)                 30.001187
-	upscaledb elapsed time (sec)             930.185267
-	upscaledb total_#ops                     2678427
-	upscaledb insert_#ops                    1338209 (2026.226590/sec)
-	upscaledb insert_throughput              2082960.934752/sec
-	upscaledb insert_latency (min, avg, max) 0.000001, 0.000494, 0.776734
-	upscaledb find_#ops                      1340158 (4968.307375/sec)
-	upscaledb find_throughput                121.479330/sec
-	upscaledb find_latency (min, avg, max)   0.000000, 0.000201, 0.090350
-	upscaledb filesize                       1489551360
+	total elapsed time (sec)                 30.002688
+	upscaledb elapsed time (sec)             930.506989
+	upscaledb total_#ops                     2669065
+	upscaledb insert_#ops                    1333547 (1976.979565/sec)
+	upscaledb insert_throughput              2032334.993332/sec
+	upscaledb insert_latency (min, avg, max) 0.000001, 0.000506, 0.551452
+	upscaledb find_#ops                      1335457 (5217.252235/sec)
+	upscaledb find_throughput                0.000000/sec
+	upscaledb find_latency (min, avg, max)   0.000000, 0.000192, 0.092341
+	upscaledb filesize                       1484111872
+
+	--- Per-thread fairness ---
+	thread         inserts         finds     total_ops
+	0                42537         42625         85162
+	1                40905         40914         81819
+	2                44731         44813         89544
+	3                39433         39484         78917
+	4                42420         42506         84926
+	5                44000         44109         88109
+	6                44075         44192         88267
+	7                44297         44441         88738
+	8                42846         42901         85747
+	9                39790         39857         79647
+	10               43969         44082         88051
+	11               40214         40266         80480
+	12               39033         39036         78069
+	13               40947         40956         81903
+	14               40679         40688         81367
+	15               41142         41154         82296
+	16               41783         41850         83633
+	17               43667         43768         87435
+	18               43063         43112         86175
+	19               39982         40041         80023
+	20               39811         39874         79685
+	21               45127         45233         90360
+	22               39415         39461         78876
+	23               43109         43162         86271
+	24               43143         43197         86340
+	25               40834         40852         81686
+	26               41406         41455         82861
+	27               37852         37834         75686
+	28               41840         41931         83771
+	29               40330         40378         80708
+	30               43127         43184         86311
+	31               38040         38101         76141
+
+	Jain's fairness index (all ops):    0.997794  [FAIR]
+	Jain's fairness index (inserts):    0.997820  [FAIR]
+	Jain's fairness index (finds):      0.997768  [FAIR]
+	Ops spread: min=75686  max=90360  ratio=1.19x
+	--- end fairness ---

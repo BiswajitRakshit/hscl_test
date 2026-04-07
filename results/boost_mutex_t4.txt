@@ -8,16 +8,29 @@ but WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 APL Apahe Public License for more details.
 
-Configuration: --seed=1775155206 --num-threads=4 --key=uint32 --recsize=1024 --distribution=random --stop-seconds=30 --find-pct=50 
+Configuration: --seed=1775563073 --num-threads=4 --key=uint32 --recsize=1024 --distribution=random --stop-seconds=30 --find-pct=50 
 
 [OK] 
-	total elapsed time (sec)                 30.000283
-	upscaledb elapsed time (sec)             117.647068
-	upscaledb total_#ops                     2467885
-	upscaledb insert_#ops                    1234839 (15340.959898/sec)
-	upscaledb insert_throughput              15769880.981492/sec
-	upscaledb insert_latency (min, avg, max) 0.000001, 0.000065, 0.029468
-	upscaledb find_#ops                      1233040 (33187.161980/sec)
-	upscaledb find_throughput                1212.678234/sec
-	upscaledb find_latency (min, avg, max)   0.000000, 0.000030, 0.125152
-	upscaledb filesize                       1369915392
+	total elapsed time (sec)                 30.000771
+	upscaledb elapsed time (sec)             117.824809
+	upscaledb total_#ops                     2464753
+	upscaledb insert_#ops                    1233272 (15090.695477/sec)
+	upscaledb insert_throughput              15512731.793777/sec
+	upscaledb insert_latency (min, avg, max) 0.000001, 0.000066, 0.058851
+	upscaledb find_#ops                      1231475 (34112.117023/sec)
+	upscaledb find_throughput                907.680506/sec
+	upscaledb find_latency (min, avg, max)   0.000000, 0.000029, 0.021912
+	upscaledb filesize                       1368260608
+
+	--- Per-thread fairness ---
+	thread         inserts         finds     total_ops
+	0               309444        309033        618477
+	1               306354        305812        612166
+	2               304163        303613        607776
+	3               313311        313017        626328
+
+	Jain's fairness index (all ops):    0.999872  [FAIR]
+	Jain's fairness index (inserts):    0.999876  [FAIR]
+	Jain's fairness index (finds):      0.999868  [FAIR]
+	Ops spread: min=607776  max=626328  ratio=1.03x
+	--- end fairness ---

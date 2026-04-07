@@ -30,6 +30,8 @@ flthread_info_t *flthread_info_create(hfairlock_t *lock, int weight) {
     info->banned = 0;
     info->slice = 0;
     info->start_ticks = 0;
+    info->parent = 0; 
+    memset(info->path, 0, sizeof(info->path));
 #ifdef DEBUG
     memset(&info->stat, 0, sizeof(stats_t));
     info->stat.start = info->banned_until;
@@ -116,7 +118,9 @@ void hfairlock_acquire(hfairlock_t *lock) {
     info = (flthread_info_t *) pthread_getspecific(lock->flthread_info_key);
     if (NULL == info) {
         info = flthread_info_create(lock, 0);
+        info->parent = 0;
         pthread_setspecific(lock->flthread_info_key, info);
+        set_path(lock, info->path, 0, info->weight, info->banned_until);
     }
 
     if (readvol(lock->slice_valid)) {
