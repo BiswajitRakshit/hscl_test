@@ -13,7 +13,7 @@
 #error Must define CYCLE_PER_US for the current machine in Makefile or elsewhere
 #endif
 #define CYCLE_PER_MS (CYCLE_PER_US*1000L)
-#define CYCLE_PER_S (CYCLE_PER_MS*1000L)
+#define CYCLE_PER_S  (CYCLE_PER_MS*1000L)
 
 #define readvol(lvalue) (*(volatile typeof(lvalue)*)(&lvalue))
 

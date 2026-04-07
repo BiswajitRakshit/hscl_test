@@ -1,0 +1,23 @@
+upscaledb 2.2.1 - Copyright (C) 2005-2016 Christoph Rupp (chris@crupp.de).
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the Apache Public License 2.0.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+APL Apahe Public License for more details.
+
+Configuration: --seed=1775155978 --num-threads=128 --key=uint32 --recsize=1024 --distribution=random --stop-seconds=30 --find-pct=50 
+
+[OK] 
+	total elapsed time (sec)                 30.008818
+	upscaledb elapsed time (sec)             3334.938721
+	upscaledb total_#ops                     2797264
+	upscaledb insert_#ops                    1405933 (596.696562/sec)
+	upscaledb insert_throughput              613404.066227/sec
+	upscaledb insert_latency (min, avg, max) 0.000001, 0.001676, 2.022418
+	upscaledb find_#ops                      1391079 (1421.289232/sec)
+	upscaledb find_throughput                0.000000/sec
+	upscaledb find_latency (min, avg, max)   0.000000, 0.000704, 0.175958
+	upscaledb filesize                       1567342592

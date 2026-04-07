@@ -1,242 +1,327 @@
 #!/usr/bin/env python3
 """
-Fairness Analysis Tool for H-SCL / u-SCL / Mutex comparison
-Usage: python3 fairness_analysis.py
-       or edit the RESULTS dict below and re-run after each experiment.
+fairness_analysis.py  — dynamic fairness comparison for H-SCL experiment
+=========================================================================
+Usage:
+    python3 fairness_analysis.py                     # reads ./results/
+    python3 fairness_analysis.py --results-dir DIR   # reads DIR/
+    python3 fairness_analysis.py --auto              # no prompts, just print
 
-Computes:
-  - Jain's fairness index on lock hold time (per thread)
-  - Jain's fairness index on acquisitions (LOT-based, correct SCL metric)
-  - Insert/find hold ratio
-  - Throughput comparison vs mutex baseline
+Result file naming convention (produced by Makefile):
+    <lock_name>_t<threads>.txt
+    e.g.  hscl_t8.txt  pthread_mutex_t16.txt  boost_mutex_t4.txt
+
+Each file is raw ups_bench stdout. The script parses:
+    upscaledb insert_#ops    N (R/sec)
+    upscaledb insert_latency (min, avg, max)
+    upscaledb find_#ops      N (R/sec)
+    upscaledb find_latency   (min, avg, max)
 """
 
-import math
+import os
+import re
+import sys
+import glob
+import argparse
+from collections import defaultdict
 
-# ─────────────────────────────────────────────────────────────────────────────
-# EDIT THIS DICT — paste your ups_bench output numbers here
-# Each entry needs: insert_ops, find_ops, insert_avg (sec), find_avg (sec)
-# insert_rate and find_rate come from the "X/sec" values in output
-# ─────────────────────────────────────────────────────────────────────────────
-RESULTS = {
-    "H-SCL u-SCL (depth=1)": {
-        "insert_ops":  3218519,
-        "find_ops":    3219391,
-        "insert_rate": 6146.363839,
-        "find_rate":   12121.592922,
-        "insert_avg":  0.000163,
-        "find_avg":    0.000082,
-        "insert_max":  0.340837,
-        "find_max":    0.312192,
-    },
+# ── Parsing ───────────────────────────────────────────────────────────────────
 
+def parse_result_file(path):
+    """Extract metrics from a single ups_bench output file."""
+    data = {}
+    try:
+        text = open(path).read()
+    except Exception as e:
+        print(f"  [WARN] cannot read {path}: {e}")
+        return None
 
-    # "H-SCL fixed (equal w)": {
-    #     "insert_ops":  2622614,
-    #     "find_ops":    2620876,
-    #     "insert_rate": 4557.739869,
-    #     "find_rate":   11926.498573,
-    #     "insert_avg":  0.000219,
-    #     "find_avg":    0.000084,
-    #     "insert_max":  0.063605,
-    #     "find_max":    0.066813,
-    # },
-    # "H-SCL fair (ins+2/fnd-2)": {
-    #     "insert_ops":  2540006,
-    #     "find_ops":    2537341,
-    #     "insert_rate": 4397.057870,
-    #     "find_rate":   11658.767154,
-    #     "insert_avg":  0.000227,
-    #     "find_avg":    0.000086,
-    #     "insert_max":  0.067984,
-    #     "find_max":    0.057274,
-    # },
-    # "H-SCL latest run": {
-    #     "insert_ops":  2511568,
-    #     "find_ops":    2508716,
-    #     "insert_rate": 4390.777235,
-    #     "find_rate":   11226.480780,
-    #     "insert_avg":  0.000228,
-    #     "find_avg":    0.000089,
-    #     "insert_max":  0.081472,
-    #     "find_max":    0.079616,
-    # },
-    # "H-SCL buggy": {
-    #     "insert_ops":  2392874,
-    #     "find_ops":    2388422,
-    #     "insert_rate": 4477.464857,
-    #     "find_rate":   9152.770311,
-    #     "insert_avg":  0.000223,
-    #     "find_avg":    0.000109,
-    #     "insert_max":  0.086581,
-    #     "find_max":    0.069129,
-    # },
-    "Mutex (baseline)": {
-        "insert_ops":  2970681,
-        "find_ops":    2969272,
-        "insert_rate": 5509.941655,
-        "find_rate":   11669.000376,
-        "insert_avg":  0.000181,
-        "find_avg":    0.000086,
-        "insert_max":  0.648877,
-        "find_max":    0.303796,
-    },
-}
+    def find(pattern):
+        m = re.search(pattern, text)
+        return float(m.group(1)) if m else None
 
-NTHREADS_PER_GROUP = 4   # 4 insert threads, 4 find threads
+    data["insert_ops"]  = find(r"insert_#ops\s+(\d+)")
+    data["find_ops"]    = find(r"find_#ops\s+(\d+)")
+    data["insert_rate"] = find(r"insert_#ops\s+\d+\s+\(([0-9.]+)/sec\)")
+    data["find_rate"]   = find(r"find_#ops\s+\d+\s+\(([0-9.]+)/sec\)")
+
+    lat = re.search(r"insert_latency.*?([0-9.]+),\s*([0-9.]+),\s*([0-9.]+)", text)
+    if lat:
+        data["insert_avg"] = float(lat.group(2))
+        data["insert_max"] = float(lat.group(3))
+
+    lat2 = re.search(r"find_latency.*?([0-9.]+),\s*([0-9.]+),\s*([0-9.]+)", text)
+    if lat2:
+        data["find_avg"] = float(lat2.group(2))
+        data["find_max"] = float(lat2.group(3))
+
+    # Validate required fields
+    required = ["insert_ops","find_ops","insert_rate","find_rate",
+                "insert_avg","find_avg","insert_max","find_max"]
+    for k in required:
+        if data.get(k) is None:
+            print(f"  [WARN] {os.path.basename(path)}: missing field '{k}'")
+            return None
+    return data
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Core calculations
-# ─────────────────────────────────────────────────────────────────────────────
+def discover_results(results_dir):
+    """
+    Scan results_dir for files matching <lock>_t<N>.txt.
+    Returns dict: { lock_name -> { thread_count -> parsed_data } }
+    """
+    pattern = os.path.join(results_dir, "*.txt")
+    files   = sorted(glob.glob(pattern))
+    if not files:
+        print(f"No result files found in '{results_dir}'.")
+        print("Run 'make run' first to generate results.")
+        sys.exit(1)
+
+    found = defaultdict(dict)
+    for f in files:
+        base = os.path.basename(f).replace(".txt","")
+        # match <lock>_t<N>
+        m = re.match(r"^(.+)_t(\d+)$", base)
+        if not m:
+            print(f"  [SKIP] unrecognised filename: {base}.txt")
+            continue
+        lock_name  = m.group(1)
+        thread_cnt = int(m.group(2))
+        data = parse_result_file(f)
+        if data:
+            found[lock_name][thread_cnt] = data
+    return found
+
+
+# ── Statistics ────────────────────────────────────────────────────────────────
 
 def jains(values):
-    """Jain's fairness index. Returns value in (0, 1], where 1 = perfectly fair."""
-    n = len(values)
-    s = sum(values)
-    sq = sum(v * v for v in values)
-    if sq == 0:
-        return 0.0
-    return (s * s) / (n * sq)
+    n  = len(values)
+    s  = sum(values)
+    sq = sum(v*v for v in values)
+    return (s*s) / (n*sq) if sq > 0 else 0.0
 
 
-def compute(name, d):
-    n = NTHREADS_PER_GROUP
-    # per-thread values
-    insert_hold_per_thread = (d["insert_ops"] / n) * d["insert_avg"]
-    find_hold_per_thread   = (d["find_ops"]   / n) * d["find_avg"]
-    insert_ops_per_thread  = d["insert_ops"] / n
-    find_ops_per_thread    = d["find_ops"]   / n
+def compute_metrics(data, nthreads):
+    """Given parsed data dict and total thread count, return metrics dict."""
+    n  = nthreads // 2   # threads per group (insert / find split 50/50)
+    if n == 0: n = 1
 
-    all_holds = [insert_hold_per_thread] * n + [find_hold_per_thread] * n
-    all_ops   = [insert_ops_per_thread]  * n + [find_ops_per_thread]  * n
+    ih = (data["insert_ops"] / n) * data["insert_avg"]
+    fh = (data["find_ops"]   / n) * data["find_avg"]
+    io = data["insert_ops"]  / n
+    fo = data["find_ops"]    / n
 
     return {
-        "name":             name,
-        "jain_hold":        jains(all_holds),
-        "jain_ops":         jains(all_ops),
-        "jain_tput":        jains([d["insert_rate"], d["find_rate"]]),
-        "ratio":            insert_hold_per_thread / find_hold_per_thread,
-        "ops_ratio":        insert_ops_per_thread  / find_ops_per_thread,
-        "insert_hold":      insert_hold_per_thread,
-        "find_hold":        find_hold_per_thread,
-        "insert_ops_thr":   insert_ops_per_thread,
-        "find_ops_thr":     find_ops_per_thread,
-        "total_ops":        d["insert_ops"] + d["find_ops"],
-        "insert_rate":      d["insert_rate"],
-        "find_rate":        d["find_rate"],
-        "insert_avg_ms":    d["insert_avg"] * 1000,
-        "find_avg_ms":      d["find_avg"]   * 1000,
-        "insert_max_ms":    d["insert_max"] * 1000,
-        "find_max_ms":      d["find_max"]   * 1000,
+        "jain_hold": jains([ih]*n + [fh]*n),
+        "jain_ops" : jains([io]*n + [fo]*n),
+        "jain_tput": jains([data["insert_rate"], data["find_rate"]]),
+        "hold_ratio": ih / fh if fh > 0 else 0,
+        "ops_ratio" : io / fo if fo > 0 else 0,
+        "ih": ih, "fh": fh, "io": io, "fo": fo,
+        "total_ops" : data["insert_ops"] + data["find_ops"],
+        "insert_rate": data["insert_rate"],
+        "find_rate"  : data["find_rate"],
+        "insert_avg" : data["insert_avg"] * 1000,
+        "find_avg"   : data["find_avg"]   * 1000,
+        "insert_max" : data["insert_max"] * 1000,
+        "find_max"   : data["find_max"]   * 1000,
     }
 
 
-rows = [compute(name, d) for name, d in RESULTS.items()]
+# ── Display ───────────────────────────────────────────────────────────────────
 
-# find mutex baseline for throughput comparison
-mutex_row = next((r for r in rows if "mutex" in r["name"].lower()), rows[-1])
-mutex_ops = mutex_row["total_ops"]
-mutex_jain = mutex_row["jain_hold"]
+SEP  = "=" * 90
+SEP2 = "-" * 90
+
+LOCK_ORDER = [
+    "boost_mutex",
+    "pthread_mutex",
+    "pthread_spin",
+    "ticket",
+    "hscl",
+]
+
+LOCK_LABELS = {
+    "boost_mutex"   : "Boost mutex (UPS native)",
+    "pthread_mutex" : "pthread_mutex",
+    "pthread_spin"  : "pthread_spinlock",
+    "ticket"        : "Ticket lock (FIFO)",
+    "hscl"          : "H-SCL (hierarchical fair)",
+}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Pretty print
-# ─────────────────────────────────────────────────────────────────────────────
+def ordered_locks(found):
+    """Return lock names in preferred display order."""
+    ordered = [l for l in LOCK_ORDER if l in found]
+    extras  = [l for l in sorted(found) if l not in LOCK_ORDER]
+    return ordered + extras
 
-SEP = "=" * 100
 
-def header(title):
-    print(f"\n{SEP}")
-    print(f"  {title}")
+def print_thread_table(found, thread_counts):
+    """Print one comparison table per thread count."""
+    for T in sorted(thread_counts):
+        print(f"\n{SEP}")
+        print(f"  THREAD COUNT = {T}  (50% insert / 50% find, 100s)")
+        print(SEP)
+
+        locks = ordered_locks(found)
+        # header
+        col = 28
+        print(f"\n  {'Lock':<{col}} {'Jain(hold)':>10} {'Jain(ops)':>10} "
+              f"{'hold ratio':>11} {'Total ops':>11} {'Find/sec':>10} "
+              f"{'Ins max(ms)':>12} {'Fnd max(ms)':>12}")
+        print(f"  {SEP2}")
+
+        baseline_ops = None
+        rows = []
+        for lock in locks:
+            if T not in found[lock]:
+                continue
+            m = compute_metrics(found[lock][T], T)
+            if baseline_ops is None:
+                baseline_ops = m["total_ops"]
+            rows.append((lock, m))
+
+        for lock, m in rows:
+            label  = LOCK_LABELS.get(lock, lock)
+            diff   = (m["total_ops"] - baseline_ops) / baseline_ops * 100 if baseline_ops else 0
+            marker = f"({diff:+.1f}%)" if baseline_ops and lock != list(ordered_locks(found))[0] else "(baseline)"
+            best_jain = m["jain_hold"] == max(r["jain_hold"] for _,r in rows)
+            star = "*" if best_jain else " "
+            print(f"  {star}{label:<{col-1}} {m['jain_hold']:>10.4f} {m['jain_ops']:>10.4f} "
+                  f"{m['hold_ratio']:>11.3f} {m['total_ops']:>9,} {marker:>3}  "
+                  f"{m['find_rate']:>10,.0f} "
+                  f"{m['insert_max']:>12.2f} {m['find_max']:>12.2f}")
+
+        print(f"  * = best Jain (hold time) for this thread count")
+
+
+def print_scaling_table(found):
+    """Print how each lock scales with thread count."""
+    print(f"\n\n{SEP}")
+    print(f"  SCALING — Total ops across thread counts")
+    print(SEP)
+
+    all_threads = sorted({T for lock_data in found.values() for T in lock_data})
+    col = 28
+
+    header = f"  {'Lock':<{col}}" + "".join(f" {T:>10}T" for T in all_threads)
+    print("\n" + header)
+    print(f"  {'-'*len(header)}")
+
+    for lock in ordered_locks(found):
+        label = LOCK_LABELS.get(lock, lock)
+        row   = f"  {label:<{col}}"
+        for T in all_threads:
+            if T in found[lock]:
+                ops = found[lock][T]["insert_ops"] + found[lock][T]["find_ops"]
+                row += f" {ops:>10,}"
+            else:
+                row += f" {'N/A':>10}"
+        print(row)
+
+    print(f"\n  {'Lock':<{col}}" + "".join(f" {T:>10}T" for T in all_threads))
+    print(f"  {'-'*len(header)}")
+    # fairness row
+    for lock in ordered_locks(found):
+        label = LOCK_LABELS.get(lock, lock)
+        row   = f"  {label:<{col}}"
+        for T in all_threads:
+            if T in found[lock]:
+                m = compute_metrics(found[lock][T], T)
+                row += f" {m['jain_hold']:>10.4f}"
+            else:
+                row += f" {'N/A':>10}"
+        print(row)
+    print(f"  (rows above = Jain hold-time fairness index)")
+
+
+def print_summary(found):
+    """Print the best lock for each metric."""
+    print(f"\n\n{SEP}")
+    print(f"  SUMMARY — Best lock per metric (averaged across thread counts)")
+    print(SEP)
+
+    lock_avgs = {}
+    for lock in ordered_locks(found):
+        if not found[lock]:
+            continue
+        jh_list, ops_list, tput_list = [], [], []
+        for T, data in found[lock].items():
+            m = compute_metrics(data, T)
+            jh_list.append(m["jain_hold"])
+            ops_list.append(m["total_ops"])
+            tput_list.append(m["find_rate"])
+        lock_avgs[lock] = {
+            "jain_hold": sum(jh_list)/len(jh_list),
+            "total_ops": sum(ops_list)/len(ops_list),
+            "find_rate": sum(tput_list)/len(tput_list),
+        }
+
+    if not lock_avgs:
+        return
+
+    best_jain = max(lock_avgs, key=lambda l: lock_avgs[l]["jain_hold"])
+    best_tput = max(lock_avgs, key=lambda l: lock_avgs[l]["total_ops"])
+    best_find = max(lock_avgs, key=lambda l: lock_avgs[l]["find_rate"])
+
+    print(f"\n  {'Metric':<35} {'Best lock':<28} {'Value'}")
+    print(f"  {'-'*70}")
+    print(f"  {'Jain fairness (hold time)':<35} {LOCK_LABELS.get(best_jain,best_jain):<28} {lock_avgs[best_jain]['jain_hold']:.4f}")
+    print(f"  {'Total throughput (ops)':<35} {LOCK_LABELS.get(best_tput,best_tput):<28} {lock_avgs[best_tput]['total_ops']:,.0f}")
+    print(f"  {'Find ops/sec':<35} {LOCK_LABELS.get(best_find,best_find):<28} {lock_avgs[best_find]['find_rate']:,.0f}")
+
+    print(f"\n  {'Lock':<28} {'Avg Jain(hold)':>15} {'Avg total ops':>15} {'Avg find/sec':>14}")
+    print(f"  {'-'*74}")
+    for lock in ordered_locks(found):
+        if lock not in lock_avgs:
+            continue
+        a = lock_avgs[lock]
+        label = LOCK_LABELS.get(lock, lock)
+        print(f"  {label:<28} {a['jain_hold']:>15.4f} {a['total_ops']:>15,.0f} {a['find_rate']:>14,.0f}")
+
+    print(f"\n  Jain formula : J = (Σxi)² / (n·Σxi²)   xi = hold_time_per_thread")
+    print(f"  LOT Jain     : xi = acquisitions_per_thread  (SCL paper metric)")
     print(SEP)
 
 
-header("FAIRNESS COMPARISON — UpscaleDB lock benchmark (8 threads, 100s, 50% find/insert)")
+# ── Main ──────────────────────────────────────────────────────────────────────
 
-# ── Table 1: Jain indices ──────────────────────────────────────────────────
-print(f"\n{'Lock':<32} {'Jain(hold)':>11} {'Jain(ops/LOT)':>14} {'Jain(tput)':>11} "
-      f"{'hold ratio':>11} {'ops ratio':>10}")
-print("-" * 92)
-for r in rows:
-    flag = " ← BEST" if r["jain_hold"] == max(x["jain_hold"] for x in rows) else ""
-    flag2 = " ← BEST" if r["jain_ops"] == max(x["jain_ops"] for x in rows) else ""
-    print(f"{r['name']:<32} {r['jain_hold']:>11.4f} {r['jain_ops']:>14.4f}{flag2}"
-          f"  {r['jain_tput']:>11.4f} {r['ratio']:>11.3f} {r['ops_ratio']:>10.4f}")
+def main():
+    parser = argparse.ArgumentParser(description="H-SCL fairness analysis")
+    parser.add_argument("--results-dir", default="results",
+                        help="Directory containing <lock>_t<N>.txt result files")
+    parser.add_argument("--auto", action="store_true",
+                        help="Non-interactive mode")
+    args = parser.parse_args()
 
-# ── Table 2: Throughput ───────────────────────────────────────────────────
-header("THROUGHPUT COMPARISON")
-print(f"\n{'Lock':<32} {'Insert/sec':>11} {'Find/sec':>11} {'Total ops':>12} {'vs mutex':>10}")
-print("-" * 80)
-for r in rows:
-    diff = (r["total_ops"] - mutex_ops) / mutex_ops * 100
-    marker = " (baseline)" if "mutex" in r["name"].lower() else f" ({diff:+.2f}%)"
-    print(f"{r['name']:<32} {r['insert_rate']:>11,.0f} {r['find_rate']:>11,.0f} "
-          f"{r['total_ops']:>12,}{marker}")
+    results_dir = args.results_dir
+    if not os.path.isdir(results_dir):
+        print(f"Results directory '{results_dir}' not found.")
+        print("Run 'make run' first.")
+        sys.exit(1)
 
-# ── Table 3: Per-thread detail ────────────────────────────────────────────
-header("PER-THREAD DETAIL")
-print(f"\n{'Lock':<32} {'ins_hold(s)':>12} {'fnd_hold(s)':>12} "
-      f"{'ins_ops/thr':>12} {'fnd_ops/thr':>12} {'ins_avg(ms)':>12} {'fnd_avg(ms)':>12}")
-print("-" * 108)
-for r in rows:
-    print(f"{r['name']:<32} {r['insert_hold']:>12.2f} {r['find_hold']:>12.2f} "
-          f"{r['insert_ops_thr']:>12,.0f} {r['find_ops_thr']:>12,.0f} "
-          f"{r['insert_avg_ms']:>12.4f} {r['find_avg_ms']:>12.4f}")
+    print(f"\n{SEP}")
+    print(f"  H-SCL FAIRNESS ANALYSIS")
+    print(f"  Reading results from: {os.path.abspath(results_dir)}")
+    print(SEP)
 
-# ── Table 4: Latency ─────────────────────────────────────────────────────
-header("LATENCY (milliseconds)")
-print(f"\n{'Lock':<32} {'ins_avg':>9} {'fnd_avg':>9} {'ins_max':>9} {'fnd_max':>9}")
-print("-" * 62)
-for r in rows:
-    print(f"{r['name']:<32} {r['insert_avg_ms']:>9.4f} {r['find_avg_ms']:>9.4f} "
-          f"{r['insert_max_ms']:>9.2f} {r['find_max_ms']:>9.2f}")
+    found = discover_results(results_dir)
+    if not found:
+        sys.exit(1)
 
-# ── Summary ───────────────────────────────────────────────────────────────
-header("SUMMARY FOR THESIS")
-print()
-best_jain_hold = max(rows, key=lambda r: r["jain_hold"])
-best_jain_ops  = max(rows, key=lambda r: r["jain_ops"])
-best_tput      = max(rows, key=lambda r: r["total_ops"])
+    print(f"\n  Found {len(found)} lock types:")
+    thread_counts = set()
+    for lock, tdata in found.items():
+        threads_str = ", ".join(str(t) for t in sorted(tdata.keys()))
+        print(f"    {LOCK_LABELS.get(lock,lock):<30}  threads: {threads_str}")
+        thread_counts.update(tdata.keys())
 
-print(f"  Best Jain (hold time)   : {best_jain_hold['name']:<32}  {best_jain_hold['jain_hold']:.4f}")
-print(f"  Best Jain (ops/LOT)     : {best_jain_ops['name']:<32}  {best_jain_ops['jain_ops']:.4f}")
-print(f"  Best throughput         : {best_tput['name']:<32}  {best_tput['total_ops']:,} ops")
-print()
-print("  Jain formula: J(x1..xn) = (Σxi)² / (n · Σxi²)")
-print("  Hold-time Jain: xi = lock_hold_time[thread_i]")
-print("  LOT Jain      : xi = acquisitions[thread_i]  (SCL paper definition)")
-print()
-print("  KEY: LOT Jain ≈ 1.0 for all H-SCL variants → equal lock opportunity")
-print("       Hold-time Jain < 1.0 reflects workload CS asymmetry, not unfairness")
-print()
+    print_thread_table(found, thread_counts)
+    print_scaling_table(found)
+    print_summary(found)
 
-# ── Weighted Jain (for unequal priority experiments) ─────────────────────
-header("WEIGHTED JAIN (for unequal thread priorities)")
-print()
-print("  Formula: xi = cs_time[i] / weight[i]  where weight from prio_to_weight[]")
-print("  Use this when threads have different nice values.")
-print()
 
-prio_to_weight = [
-    88761,71755,56483,46273,36291,29154,23254,18705,14949,11916,
-     9548, 7620, 6100, 4904, 3906, 3121, 2501, 1991, 1586, 1277,
-     1024,  820,  655,  526,  423,  335,  272,  215,  172,  137,
-      110,   87,   70,   56,   45,   36,   29,   23,   18,   15,
-]
-
-# Example: insert nice=+2 (w=655), find nice=-2 (w=1586)
-w_insert = prio_to_weight[2 + 20]   # 655
-w_find   = prio_to_weight[-2 + 20]  # 1586
-
-for r in rows:
-    n = NTHREADS_PER_GROUP
-    ih = r["insert_hold"]
-    fh = r["find_hold"]
-    # weighted xi = hold_time / weight
-    xi_list = [ih / w_insert] * n + [fh / w_find] * n
-    jw = jains(xi_list)
-    print(f"  {r['name']:<34}  weighted Jain = {jw:.4f}")
-
-print()
-print(SEP)
+if __name__ == "__main__":
+    main()

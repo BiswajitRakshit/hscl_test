@@ -1,0 +1,11 @@
+upscaledb 2.2.1 - Copyright (C) 2005-2016 Christoph Rupp (chris@crupp.de).
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the Apache Public License 2.0.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+APL Apahe Public License for more details.
+
+Configuration: --seed=1775144367 --num-threads=4 --key=uint32 --recsize=1024 --distribution=random --stop-seconds=30 --find-pct=50 

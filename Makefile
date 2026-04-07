@@ -1,125 +1,121 @@
-# ── HSCL_TEST_1 Makefile ────────────────────────────────────────────────────
-# Usage:
-#   make hscl    → builds ups_bench_hscl
-#   make mutex   → builds ups_bench_mutex
-#   make all     → builds both
-#   make run     → pins CPU, runs both, prints results
-#   make clean   → removes .o files and binaries
-#
-# Set UPSCALEDB to your upscaledb source root if different.
-# CYCLE_PER_US is auto-detected from /proc/cpuinfo at build time.
-# ────────────────────────────────────────────────────────────────────────────
-
+# ── HSCL_TEST_1 Makefile ──────────────────────────────────────────────────────
 UPSCALEDB   ?= $(HOME)/upscaledb
-CYCLE_PER_US := $(shell cat /proc/cpuinfo | grep "cpu MHz" | head -1 | \
-                awk '{printf "%d", $$4}')
+DURATION    ?= 30
+FIND_PCT    ?= 50
+THREAD_COUNTS ?= 4 8 16 32 64 128 256
 
-MAX_DEPTH    = 2
-SLICE_MS     = 2
-GRANULARITY  = ($(CYCLE_PER_US)L*1000L*$(SLICE_MS)L)
+CYCLE_PER_US := $(shell cat /proc/cpuinfo | grep "cpu MHz" | head -1 | awk '{printf "%d", $$4}')
+MAX_DEPTH    := 2
+GRANULARITY  := ($(CYCLE_PER_US)L*1000L*2L)
 
-CC   = gcc
 CXX  = g++
-OPTS = -g -O2
-
+CC   = gcc
+OPTS = -g -O2 -pthread
 BENCH_INC = -I. -Ilocks/ \
             -I$(UPSCALEDB)/tools/ups_bench \
             -I$(UPSCALEDB)/tools \
             -I$(UPSCALEDB)/src \
             -I/usr/local/include
-
-HSCL_DEF  = -DHFAIRLOCK \
-             -DMAX_DEPTH=$(MAX_DEPTH) \
-             -DCYCLE_PER_US=$(CYCLE_PER_US)L \
-             -DFAIRLOCK_GRANULARITY='$(GRANULARITY)'
-
 LIBS = -L/usr/local/lib -lupscaledb \
        -lboost_thread -lboost_system -lboost_filesystem -lboost_chrono \
        -lpthread
+COMMON_DEF = -DCYCLE_PER_US=$(CYCLE_PER_US)L \
+             -DMAX_DEPTH=$(MAX_DEPTH) \
+             -DFAIRLOCK_GRANULARITY='$(GRANULARITY)'
+BENCH_SRCS = $(UPSCALEDB)/tools/ups_bench
+BENCH_OBJS = getopts.o common.o database.o generator_parser.o \
+             generator_runtime.o berkeleydb.o
+BENCH_ARGS = --distribution=random --key=uint32 \
+             --find-pct=$(FIND_PCT) --no-progress \
+             --stop-seconds=$(DURATION)
 
-BENCH_OBJS = getopts.o common.o berkeleydb.o database.o \
-             generator_parser.o generator_runtime.o
+.PHONY: all info build-objs clean run fairness
 
-.PHONY: all hscl mutex run clean info
-
-all: hscl mutex
+all: info build-objs \
+     ups_bench_boost_mutex ups_bench_pthread_mutex \
+     ups_bench_pthread_spin ups_bench_ticket ups_bench_hscl
+	@echo "" && echo "All binaries built:" && ls -lh ups_bench_*
 
 info:
-	@echo "CYCLE_PER_US = $(CYCLE_PER_US)"
-	@echo "MAX_DEPTH    = $(MAX_DEPTH)"
-	@echo "GRANULARITY  = $(GRANULARITY)"
+	@echo "============================================"
+	@echo "  CPU MHz       : $(CYCLE_PER_US)"
+	@echo "  CYCLE_PER_US  : $(CYCLE_PER_US)L"
+	@echo "  Thread counts : $(THREAD_COUNTS)"
+	@echo "  Duration      : $(DURATION)s per run"
+	@echo "  Find pct      : $(FIND_PCT)%"
+	@echo "============================================"
 
-# ── hfairlock object ─────────────────────────────────────────────────────────
-hfairlock.o: locks/hfairlock.c locks/hfairlock.h hscl_common.h
-	$(CC) $< -c $(OPTS) -Ilocks/ -I. \
-	    -DCYCLE_PER_US=$(CYCLE_PER_US)L \
-	    -DMAX_DEPTH=$(MAX_DEPTH) \
-	    -DFAIRLOCK_GRANULARITY='$(GRANULARITY)' \
-	    -o $@
+build-objs: $(BENCH_OBJS) hfairlock.o
 
-# ── upstream bench objects ───────────────────────────────────────────────────
+hfairlock.o: locks/hfairlock.c locks/hfairlock.h hscl_common.h rdtsc.h
+	$(CC) $< -c $(OPTS) -Ilocks/ -I. $(COMMON_DEF) -o $@
+
 getopts.o: $(UPSCALEDB)/tools/getopts.cc
 	$(CXX) $< -c $(OPTS) -I$(UPSCALEDB)/tools -I/usr/local/include -o $@
 
 common.o: $(UPSCALEDB)/tools/ups_bench/common.c
-	$(CC) $< -c $(OPTS) \
-	    -I$(UPSCALEDB)/tools/ups_bench \
-	    -I$(UPSCALEDB)/tools \
-	    -o $@
+	$(CC) $< -c $(OPTS) -I$(BENCH_SRCS) -I$(UPSCALEDB)/tools -o $@
 
-database.o: $(UPSCALEDB)/tools/ups_bench/database.cc
+database.o: $(BENCH_SRCS)/database.cc
 	$(CXX) $< -c $(OPTS) $(BENCH_INC) -DBOOST_TIMER_ENABLE_DEPRECATED -o $@
 
-generator_parser.o: $(UPSCALEDB)/tools/ups_bench/generator_parser.cc
+generator_parser.o: $(BENCH_SRCS)/generator_parser.cc
 	$(CXX) $< -c $(OPTS) $(BENCH_INC) -DBOOST_TIMER_ENABLE_DEPRECATED -o $@
 
-generator_runtime.o: $(UPSCALEDB)/tools/ups_bench/generator_runtime.cc
+generator_runtime.o: $(BENCH_SRCS)/generator_runtime.cc
 	$(CXX) $< -c $(OPTS) $(BENCH_INC) -DBOOST_TIMER_ENABLE_DEPRECATED -o $@
 
-berkeleydb.o: $(UPSCALEDB)/tools/ups_bench/berkeleydb.cc
+berkeleydb.o: $(BENCH_SRCS)/berkeleydb.cc
 	$(CXX) $< -c $(OPTS) $(BENCH_INC) -DBOOST_TIMER_ENABLE_DEPRECATED -o $@ \
-	    2>/dev/null || (echo "berkeleydb skipped (not installed)" && touch $@)
+	    2>/dev/null || touch $@
 
-# ── H-SCL binary ─────────────────────────────────────────────────────────────
-hscl: ups_bench_hscl
+ups_bench_boost_mutex: main.cc upscaledb.cc $(BENCH_OBJS)
+	@echo "Building boost_mutex..."; \
+	$(CXX) $^ -o $@ $(OPTS) $(BENCH_INC) $(LIBS) $(COMMON_DEF) -DLOCK_BOOST_MUTEX
+
+ups_bench_pthread_mutex: main.cc upscaledb.cc $(BENCH_OBJS)
+	@echo "Building pthread_mutex..."; \
+	$(CXX) $^ -o $@ $(OPTS) $(BENCH_INC) $(LIBS) $(COMMON_DEF) -DLOCK_PTHREAD_MUTEX
+
+ups_bench_pthread_spin: main.cc upscaledb.cc $(BENCH_OBJS)
+	@echo "Building pthread_spin..."; \
+	$(CXX) $^ -o $@ $(OPTS) $(BENCH_INC) $(LIBS) $(COMMON_DEF) -DLOCK_PTHREAD_SPIN
+
+ups_bench_ticket: main.cc upscaledb.cc $(BENCH_OBJS)
+	@echo "Building ticket_lock..."; \
+	$(CXX) $^ -o $@ $(OPTS) $(BENCH_INC) $(LIBS) $(COMMON_DEF) -DLOCK_TICKET
 
 ups_bench_hscl: main.cc upscaledb.cc hfairlock.o $(BENCH_OBJS)
-	@echo "Building H-SCL with CYCLE_PER_US=$(CYCLE_PER_US)..."
-	$(CXX) $^ -o $@ $(HSCL_DEF) $(BENCH_INC) $(LIBS) $(OPTS)
-	@echo "Built: $@"
+	@echo "Building H-SCL..."; \
+	$(CXX) $^ -o $@ $(OPTS) $(BENCH_INC) $(LIBS) $(COMMON_DEF) -DHFAIRLOCK
 
-# ── Mutex baseline binary ─────────────────────────────────────────────────────
-mutex: ups_bench_mutex
 
-ups_bench_mutex: $(UPSCALEDB)/tools/ups_bench/main.cc \
-                 $(UPSCALEDB)/tools/ups_bench/upscaledb.cc \
-                 $(BENCH_OBJS)
-	@echo "Building mutex baseline..."
-	$(CXX) $^ -o $@ $(BENCH_INC) $(LIBS) $(OPTS)
-	@echo "Built: $@"
+run: all
+	@echo "Pinning CPU..."
+	@mkdir -p results
+	sudo cpupower frequency-set -g performance 2>/dev/null || true
+	@NCORES=$$(nproc); \
+	export LD_LIBRARY_PATH=/usr/local/lib:$$LD_LIBRARY_PATH; \
+	for T in $(THREAD_COUNTS); do \
+	    for LOCK in boost_mutex pthread_mutex pthread_spin ticket hscl; do \
+	        if [ "$$LOCK" = "pthread_spin" ] && [ "$$T" -ge "$$NCORES" ]; then \
+	            echo ""; echo "=== $$LOCK  threads=$$T — SKIPPED (spinlock unsafe: threads>=cores) ==="; \
+	            continue; \
+	        fi; \
+	        echo ""; echo "=== $$LOCK  threads=$$T ==="; \
+	        timeout 60 ./ups_bench_$$LOCK --num-threads=$$T $(BENCH_ARGS) \
+	            2>&1 | tee results/$${LOCK}_t$${T}.txt; \
+	        rm -f test-ham.db test-ham.db.jrn0 test-ham.db.jrn1; \
+	        sleep 2; \
+	    done; \
+	done
 
-# ── Run experiment ────────────────────────────────────────────────────────────
-run: ups_bench_hscl ups_bench_mutex
-	@echo "Pinning CPU to performance mode..."
-	sudo cpupower frequency-set -g performance || true
-	export LD_LIBRARY_PATH=/usr/local/lib:$$LD_LIBRARY_PATH && \
-	echo "=== Running H-SCL ===" && \
-	./ups_bench_hscl \
-	    --num-threads=8 --stop-seconds=100 \
-	    --distribution=random --key=uint32 \
-	    --find-pct=50 --no-progress \
-	    2>&1 | tee results_hscl.txt && \
-	echo "=== Running Mutex ===" && \
-	./ups_bench_mutex \
-	    --num-threads=8 --stop-seconds=100 \
-	    --distribution=random --key=uint32 \
-	    --find-pct=50 --no-progress \
-	    2>&1 | tee results_mutex.txt
-	@echo ""
-	@echo "=== H-SCL ===" && grep -E "insert_#ops|find_#ops|insert_latency|find_latency" results_hscl.txt
-	@echo "=== MUTEX ===" && grep -E "insert_#ops|find_#ops|insert_latency|find_latency" results_mutex.txt
-	sudo cpupower frequency-set -g powersave || true
 
-# ── Clean ─────────────────────────────────────────────────────────────────────
+	@echo ""; echo "Results saved to results/. Running analysis..."
+	@python3 fairness_analysis.py --results-dir=results --auto
+
+fairness:
+	@python3 plot_figures.py --results-dir=results 
+
 clean:
-	rm -f *.o ups_bench_hscl ups_bench_mutex results_*.txt test-ham.db*
+	rm -f *.o ups_bench_* test-ham.db* 2>/dev/null || true

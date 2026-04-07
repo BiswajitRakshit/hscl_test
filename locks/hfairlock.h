@@ -1,10 +1,6 @@
 #ifndef __HFAIRLOCK__
 #define __HFAIRLOCK__
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #define _GNU_SOURCE
 #include <stddef.h>
 #include <stdlib.h>
@@ -23,14 +19,6 @@ typedef unsigned long long ull;
 
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
-
-#ifndef MAX_DEPTH
-#define MAX_DEPTH 8
-#endif
-
-#ifndef FAIRLOCK_GRANULARITY
-#define FAIRLOCK_GRANULARITY (CYCLE_PER_MS * 20L)
-#endif
 
 #ifdef DEBUG
 typedef struct stats {
@@ -55,14 +43,6 @@ typedef struct node {
     ull banned_until;
 } node_t;
 
-/*
- * BUG FIX 1 — path[] initialisation sentinel.
- * path[] is filled by set_path() right-to-left. Slots that are not
- * written (depth < MAX_DEPTH) were left as 0, causing every loop that
- * iterates the full MAX_DEPTH to visit node 0 multiple times and
- * double-charge its weight and ban.  We add a depth field so callers
- * can iterate only the valid prefix.
- */
 typedef struct flthread_info {
     ull banned_until;
     ull weight;
@@ -70,7 +50,6 @@ typedef struct flthread_info {
     ull start_ticks;
     int banned;
     int parent;
-    int depth;          /* FIX 1: actual number of valid entries in path[] */
 #ifdef DEBUG
     stats_t stat;
 #endif
@@ -78,7 +57,7 @@ typedef struct flthread_info {
 } flthread_info_t;
 
 enum qnode_state {
-    INIT = 0,
+    INIT = 0, // not waiting or after next runnable node
     NEXT,
     RUNNABLE,
     RUNNING
@@ -103,15 +82,13 @@ static inline qnode_t *flqnode(hfairlock_t *lock) {
     return (qnode_t *) ((char *) &lock->qnext - offsetof(qnode_t, next));
 }
 
-static inline int futex(int *uaddr, int futex_op, int val,
-                        const struct timespec *timeout) {
+static inline int futex(int *uaddr, int futex_op, int val, const struct timespec *timeout) {
     return syscall(SYS_futex, uaddr, futex_op, val, timeout, NULL, 0);
 }
 
 int hfairlock_init(hfairlock_t *lock, node_t *hierarchy);
 flthread_info_t *flthread_info_create(hfairlock_t *lock, int weight);
-void set_path(hfairlock_t *lock, int path[], int *depth_out,
-              int parent, int weight, ull banned_until);
+void set_path(hfairlock_t *lock, int path[], int parent, int weight, ull banned_until);
 void hfairlock_thread_init(hfairlock_t *lock, int weight, int parent);
 int hfairlock_destroy(hfairlock_t *lock);
 ull get_updated_ban(hfairlock_t *lock, int parent, ull banned_until);
@@ -120,8 +97,4 @@ ull set_slice(hfairlock_t *lock, flthread_info_t *info);
 void hfairlock_acquire(hfairlock_t *lock);
 ull hfairlock_release(hfairlock_t *lock);
 
-#ifdef __cplusplus
-}
 #endif
-
-#endif /* __HFAIRLOCK__ */
