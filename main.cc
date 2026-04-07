@@ -1206,12 +1206,29 @@ run_single_test(Configuration *conf)
   Metrics metrics;
   generator.get_metrics(&metrics);
 
+  // per-thread op counts for fairness calculation
+  // thread_ops[i] = {insert_ops, find_ops, total_ops}
+  struct ThreadOps {
+    uint64_t insert_ops;
+    uint64_t find_ops;
+    uint64_t total_ops;
+  };
+  std::vector<ThreadOps> thread_ops;
+  {
+    Metrics m0;
+    generator.get_metrics(&m0);
+    thread_ops.push_back({m0.insert_ops, m0.find_ops,
+                          m0.insert_ops + m0.find_ops + m0.erase_ops});
+  }
+
   // "add up" the metrics from the other threads and join the other threads
   std::vector<boost::thread *>::iterator it;
   std::vector<Callable *>::iterator cit = callables.begin();
   for (it = threads.begin(); it != threads.end(); it++, cit++) {
     Metrics m;
     (*cit)->get_metrics(&m);
+    thread_ops.push_back({m.insert_ops, m.find_ops,
+                          m.insert_ops + m.find_ops + m.erase_ops});
     add_metrics(&metrics, &m);
     (*it)->join();
     delete *it;
@@ -1242,6 +1259,59 @@ run_single_test(Configuration *conf)
                   metrics.elapsed_wallclock_seconds);
       print_metrics(&metrics, conf);
     }
+
+    // ── Per-thread fairness (Jain's Index) ──────────────────────────────────
+    int n = (int)thread_ops.size();
+    printf("\n\t--- Per-thread fairness ---\n");
+    printf("\t%-8s  %12s  %12s  %12s\n",
+           "thread", "inserts", "finds", "total_ops");
+
+    // Jain accumulators: on total_ops, insert_ops, find_ops
+    double sum_total = 0, sum_sq_total = 0;
+    double sum_ins   = 0, sum_sq_ins   = 0;
+    double sum_find  = 0, sum_sq_find  = 0;
+
+    for (int i = 0; i < n; i++) {
+      printf("\t%-8d  %12lu  %12lu  %12lu\n",
+             i,
+             (unsigned long)thread_ops[i].insert_ops,
+             (unsigned long)thread_ops[i].find_ops,
+             (unsigned long)thread_ops[i].total_ops);
+      double t = (double)thread_ops[i].total_ops;
+      double ins = (double)thread_ops[i].insert_ops;
+      double fnd = (double)thread_ops[i].find_ops;
+      sum_total   += t;   sum_sq_total += t * t;
+      sum_ins     += ins; sum_sq_ins   += ins * ins;
+      sum_find    += fnd; sum_sq_find  += fnd * fnd;
+    }
+
+    // Jain's Fairness Index = (sum xi)^2 / (n * sum xi^2)
+    // guard against all-zero
+    double jain_total = (sum_sq_total > 0)
+        ? (sum_total * sum_total) / (n * sum_sq_total) : 1.0;
+    double jain_ins   = (sum_sq_ins > 0)
+        ? (sum_ins * sum_ins)     / (n * sum_sq_ins)   : 1.0;
+    double jain_find  = (sum_sq_find > 0)
+        ? (sum_find * sum_find)   / (n * sum_sq_find)  : 1.0;
+
+    printf("\n\tJain's fairness index (all ops):    %.6f  %s\n",
+           jain_total, jain_total > 0.95 ? "[FAIR]" : "[UNFAIR]");
+    printf("\tJain's fairness index (inserts):    %.6f  %s\n",
+           jain_ins,   jain_ins   > 0.95 ? "[FAIR]" : "[UNFAIR]");
+    printf("\tJain's fairness index (finds):      %.6f  %s\n",
+           jain_find,  jain_find  > 0.95 ? "[FAIR]" : "[UNFAIR]");
+
+    // min/max spread
+    uint64_t min_t = thread_ops[0].total_ops, max_t = thread_ops[0].total_ops;
+    for (int i = 1; i < n; i++) {
+      if (thread_ops[i].total_ops < min_t) min_t = thread_ops[i].total_ops;
+      if (thread_ops[i].total_ops > max_t) max_t = thread_ops[i].total_ops;
+    }
+    printf("\tOps spread: min=%lu  max=%lu  ratio=%.2fx\n",
+           (unsigned long)min_t, (unsigned long)max_t,
+           min_t > 0 ? (double)max_t / min_t : 0.0);
+    printf("\t--- end fairness ---\n");
+    // ────────────────────────────────────────────────────────────────────────
   }
   else
     printf("\n[FAIL] %s\n", conf->filename.c_str());

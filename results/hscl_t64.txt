@@ -8,17 +8,90 @@ but WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 APL Apahe Public License for more details.
 
-Configuration: --seed=1775561174 --num-threads=64 --key=uint32 --recsize=1024 --distribution=random --stop-seconds=30 --find-pct=50 
+Configuration: --seed=1775563806 --num-threads=64 --key=uint32 --recsize=1024 --distribution=random --stop-seconds=30 --find-pct=50 
   [hierarchy] default 2-group (insert→1, find→2)
 
 [OK] 
-	total elapsed time (sec)                 30.036379
-	upscaledb elapsed time (sec)             1834.030435
-	upscaledb total_#ops                     3057777
-	upscaledb insert_#ops                    1527815 (1173.514815/sec)
-	upscaledb insert_throughput              1206373.229814/sec
-	upscaledb insert_latency (min, avg, max) 0.000001, 0.000852, 0.358757
-	upscaledb find_#ops                      1529838 (2875.004416/sec)
+	total elapsed time (sec)                 30.084925
+	upscaledb elapsed time (sec)             1827.202395
+	upscaledb total_#ops                     3053109
+	upscaledb insert_#ops                    1525691 (1173.620388/sec)
+	upscaledb insert_throughput              1206481.758943/sec
+	upscaledb insert_latency (min, avg, max) 0.000001, 0.000852, 0.509908
+	upscaledb find_#ops                      1527293 (2896.904002/sec)
 	upscaledb find_throughput                0.000000/sec
-	upscaledb find_latency (min, avg, max)   0.000000, 0.000348, 0.116574
-	upscaledb filesize                       1703231488
+	upscaledb find_latency (min, avg, max)   0.000000, 0.000345, 0.300452
+	upscaledb filesize                       1700577280
+
+	--- Per-thread fairness ---
+	thread         inserts         finds     total_ops
+	0                26547         26562         53109
+	1                23319         23387         46706
+	2                23688         23734         47422
+	3                26836         26865         53701
+	4                20737         20726         41463
+	5                24551         24585         49136
+	6                26849         26881         53730
+	7                23190         23254         46444
+	8                22738         22760         45498
+	9                24564         24594         49158
+	10               23966         24037         48003
+	11               23604         23643         47247
+	12               24225         24245         48470
+	13               24804         24837         49641
+	14               22501         22499         45000
+	15               23476         23519         46995
+	16               24698         24715         49413
+	17               24957         25010         49967
+	18               22738         22760         45498
+	19               24595         24629         49224
+	20               25461         25493         50954
+	21               21883         21838         43721
+	22               26744         26779         53523
+	23               25910         25918         51828
+	24               20400         20366         40766
+	25               22243         22224         44467
+	26               24343         24362         48705
+	27               20398         20364         40762
+	28               21856         21808         43664
+	29               24388         24402         48790
+	30               23430         23479         46909
+	31               25385         25426         50811
+	32               25667         25679         51346
+	33               23007         23072         46079
+	34               23901         23972         47873
+	35               24660         24675         49335
+	36               27553         27590         55143
+	37               22704         22712         45416
+	38               24134         24165         48299
+	39               24579         24616         49195
+	40               23893         23961         47854
+	41               23878         23940         47818
+	42               23751         23805         47556
+	43               23690         23735         47425
+	44               24288         24306         48594
+	45               25280         25334         50614
+	46               20803         20792         41595
+	47               22455         22458         44913
+	48               26189         26192         52381
+	49               22031         21993         44024
+	50               20935         20935         41870
+	51               24511         24542         49053
+	52               24294         24314         48608
+	53               26009         26017         52026
+	54               20998         21024         42022
+	55               26374         26394         52768
+	56               25304         25357         50661
+	57               23935         24007         47942
+	58               23751         23805         47556
+	59               20835         20833         41668
+	60               22813         22844         45657
+	61               22942         22998         45940
+	62               24181         24195         48376
+	63               21322         21330         42652
+
+	Jain's fairness index (all ops):    0.994835  [FAIR]
+	Jain's fairness index (inserts):    0.994866  [FAIR]
+	Jain's fairness index (finds):      0.994803  [FAIR]
+	Ops spread: min=40762  max=55143  ratio=1.35x
+	--- end fairness ---

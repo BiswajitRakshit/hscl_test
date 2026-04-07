@@ -8,16 +8,33 @@ but WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 APL Apahe Public License for more details.
 
-Configuration: --seed=1775560591 --num-threads=8 --key=uint32 --recsize=1024 --distribution=random --stop-seconds=30 --find-pct=50 
+Configuration: --seed=1775563226 --num-threads=8 --key=uint32 --recsize=1024 --distribution=random --stop-seconds=30 --find-pct=50 
 
 [OK] 
-	total elapsed time (sec)                 30.000337
-	upscaledb elapsed time (sec)             236.221740
-	upscaledb total_#ops                     2468450
-	upscaledb insert_#ops                    1235484 (7476.573678/sec)
-	upscaledb insert_throughput              7685793.321598/sec
-	upscaledb insert_latency (min, avg, max) 0.000001, 0.000134, 0.032604
-	upscaledb find_#ops                      1232952 (17371.787588/sec)
-	upscaledb find_throughput                346.265752/sec
-	upscaledb find_latency (min, avg, max)   0.000000, 0.000058, 0.116957
-	upscaledb filesize                       1370128384
+	total elapsed time (sec)                 30.000479
+	upscaledb elapsed time (sec)             236.440559
+	upscaledb total_#ops                     2471766
+	upscaledb insert_#ops                    1237009 (7366.309842/sec)
+	upscaledb insert_throughput              7572235.946816/sec
+	upscaledb insert_latency (min, avg, max) 0.000001, 0.000136, 0.058431
+	upscaledb find_#ops                      1234746 (18022.160551/sec)
+	upscaledb find_throughput                89.676868/sec
+	upscaledb find_latency (min, avg, max)   0.000000, 0.000055, 0.025020
+	upscaledb filesize                       1373011968
+
+	--- Per-thread fairness ---
+	thread         inserts         finds     total_ops
+	0               157139        156811        313950
+	1               155982        155665        311647
+	2               149452        149304        298756
+	3               161678        161244        322922
+	4               154099        153766        307865
+	5               157366        157033        314399
+	6               144003        143956        287959
+	7               157290        156967        314257
+
+	Jain's fairness index (all ops):    0.998913  [FAIR]
+	Jain's fairness index (inserts):    0.998891  [FAIR]
+	Jain's fairness index (finds):      0.998935  [FAIR]
+	Ops spread: min=287959  max=322922  ratio=1.12x
+	--- end fairness ---
