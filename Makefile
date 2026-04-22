@@ -1,7 +1,7 @@
 # ── HSCL_TEST_1 Makefile ──────────────────────────────────────────────────────
 UPSCALEDB   ?= $(HOME)/upscaledb
-DURATION    ?= 30
-FIND_PCT    ?= 50
+DURATION    ?= 100
+FIND_PCT    ?= 100
 THREAD_COUNTS ?= 4 8 16 32 64 128 256
 
 CYCLE_PER_US := $(shell cat /proc/cpuinfo | grep "cpu MHz" | head -1 | awk '{printf "%d", $$4}')
@@ -100,7 +100,7 @@ gen-hierarchies:
 	@python3 -c "\
 counts = [4, 8, 16, 32, 64, 128, 256]; \
 [open('hierarchy/t%d.txt' % T, 'w').write( \
-    '3\n0\n0\n0\n' + \
+    '3\n0\n0\n' + \
     ''.join('1\n' if i < T//2 else '2\n' for i in range(T))) \
  for T in counts]; \
 print('Generated hierarchy/t{4,8,16,32,64,128,256}.txt') \
@@ -127,7 +127,7 @@ run: all
 	            continue; \
 	        fi; \
 	        echo ""; echo "=== $$LOCK  threads=$$T ==="; \
-	        timeout 60 ./ups_bench_$$LOCK --num-threads=$$T $(BENCH_ARGS) \
+	        timeout $$(($(DURATION) + 30)) ./ups_bench_$$LOCK --num-threads=$$T $(BENCH_ARGS) \
 	            2>&1 | tee results/$${LOCK}_t$${T}.txt; \
 	        rm -f test-ham.db test-ham.db.jrn0 test-ham.db.jrn1; \
 	        sleep 2; \
@@ -146,7 +146,7 @@ run-flat: ups_bench_hscl
 	@export LD_LIBRARY_PATH=/usr/local/lib:$$LD_LIBRARY_PATH; \
 	for T in $(THREAD_COUNTS); do \
 	    echo ""; echo "--- hscl flat  threads=$$T ---"; \
-	    timeout 60 ./ups_bench_hscl --num-threads=$$T $(BENCH_ARGS) \
+	    timeout $$(($(DURATION) + 30)) ./ups_bench_hscl --num-threads=$$T $(BENCH_ARGS) \
 	        2>&1 | tee results/flat/hscl_t$${T}.txt; \
 	    rm -f test-ham.db test-ham.db.jrn0 test-ham.db.jrn1; \
 	    sleep 2; \
@@ -160,7 +160,7 @@ run-two-level: ups_bench_hscl
 	@export LD_LIBRARY_PATH=/usr/local/lib:$$LD_LIBRARY_PATH; \
 	for T in $(THREAD_COUNTS); do \
 	    echo ""; echo "--- hscl two_level  threads=$$T ---"; \
-	    timeout 60 ./ups_bench_hscl --num-threads=$$T $(BENCH_ARGS) \
+	    timeout $$(($(DURATION) + 30)) ./ups_bench_hscl --num-threads=$$T $(BENCH_ARGS) \
 	        2>&1 | tee results/two_level/hscl_t$${T}.txt; \
 	    rm -f test-ham.db test-ham.db.jrn0 test-ham.db.jrn1; \
 	    sleep 2; \
@@ -174,7 +174,7 @@ run-privileged: ups_bench_hscl
 	@export LD_LIBRARY_PATH=/usr/local/lib:$$LD_LIBRARY_PATH; \
 	for T in $(THREAD_COUNTS); do \
 	    echo ""; echo "--- hscl privileged  threads=$$T ---"; \
-	    timeout 60 ./ups_bench_hscl --num-threads=$$T $(BENCH_ARGS) \
+	    timeout $$(($(DURATION) + 30)) ./ups_bench_hscl --num-threads=$$T $(BENCH_ARGS) \
 	        2>&1 | tee results/privileged/hscl_t$${T}.txt; \
 	    rm -f test-ham.db test-ham.db.jrn0 test-ham.db.jrn1; \
 	    sleep 2; \

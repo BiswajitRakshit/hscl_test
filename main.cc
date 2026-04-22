@@ -42,7 +42,6 @@
 extern "C" {
   #include "locks/hfairlock.h"
   #include "rdtsc.h"
-  #include "common.h"
 }
 extern hfairlock_t ms_hfairlock;
 extern int         g_nthreads;
@@ -1096,18 +1095,29 @@ print_metrics(Metrics *metrics, Configuration *conf)
 // Threads 1..N/2-1 → insert group (node 1), N/2..N-1 → find group (node 2).
 // ─────────────────────────────────────────────────────────────────────────────
 struct Callable {
-  Callable(int id_, Configuration *conf_, int parent_node_ = -1)
-    : conf(conf_), db(new UpscaleDatabase(id_, conf_)), id(id_),
+  Callable(int id_, Configuration *conf_, int parent_node_ = -1,
+           int find_pct_override = -1)
+    : conf(conf_), own_conf(nullptr), db(nullptr), id(id_),
         generator(0), parent_node(parent_node_) {
+    // Clone config so per-thread find_pct doesn't mutate the shared original
+    if (find_pct_override >= 0) {
+      own_conf = new Configuration(*conf_);
+      own_conf->find_pct  = find_pct_override;
+      // erase_pct budget: keep total <= 100
+      if (own_conf->find_pct + own_conf->erase_pct > 100)
+        own_conf->erase_pct = 100 - own_conf->find_pct;
+      conf = own_conf;
+    }
+    db = new UpscaleDatabase(id_, conf);
     if (conf->filename.empty())
-      generator = new RuntimeGenerator(id_, conf_, db, false);
+      generator = new RuntimeGenerator(id_, conf, db, false);
     else
-      generator = new ParserGenerator(id_, conf_, db, false);
+      generator = new ParserGenerator(id_, conf, db, false);
   }
 
   ~Callable() {
-    // TODO delete db!
     delete generator;
+    delete own_conf;   // null-safe
   }
 
   void operator()() {
@@ -1128,6 +1138,7 @@ struct Callable {
   }
 
   Configuration *conf;
+  Configuration *own_conf;
   Database *db;
   int id;
   ::Generator *generator;
@@ -1164,25 +1175,31 @@ static bool
 run_single_test(Configuration *conf)
 {
 #if defined(HFAIRLOCK)
-  // ── H-SCL lock initialisation (hierarchy loaded from file or default) ──────
   g_nthreads = conf->num_threads;
-
-  // parse_hierarchy_file allocates g_hierarchy and returns per-thread parents
   std::vector<int> thread_parents =
       parse_hierarchy_file(g_hierarchy_file, conf->num_threads);
-
   hfairlock_init(&ms_hfairlock, g_hierarchy);
-
-  // Register thread 0 in the context of the main thread
   int weight0 = prio_to_weight[0 + 20];
   hfairlock_thread_init(&ms_hfairlock, weight0, thread_parents[0]);
-  // ─────────────────────────────────────────────────────────────────────────
 #endif
 
-  Database *db = new DatabaseType(0, conf);
-  GeneratorType generator(0, conf, db, true);
+  Configuration conf0_storage;
+  Configuration *conf0 = conf;
+#if defined(HFAIRLOCK)
+  {
+    int pn0 = thread_parents[0];
+    if (pn0 == 1 || pn0 == 2) {
+      conf0_storage = *conf;
+      conf0_storage.find_pct = (pn0 == 1) ? 0 : 100;
+      if (conf0_storage.find_pct + conf0_storage.erase_pct > 100)
+        conf0_storage.erase_pct = 100 - conf0_storage.find_pct;
+      conf0 = &conf0_storage;
+    }
+  }
+#endif
+  Database *db = new DatabaseType(0, conf0);
+  GeneratorType generator(0, conf0, db, true);
 
-  // create additional threads
   std::vector<boost::thread *> threads;
   std::vector<Callable *> callables;
   for (int i = 1; i < conf->num_threads; i++) {
@@ -1191,37 +1208,30 @@ run_single_test(Configuration *conf)
 #else
     int pn = -1;
 #endif
-    Callable *c = new Callable(i, conf, pn);
+    int fpct = -1;
+#if defined(HFAIRLOCK)
+    if (pn == 1) fpct = 0;
+    else if (pn == 2) fpct = 100;
+#endif
+    Callable *c = new Callable(i, conf, pn, fpct);
     callables.push_back(c);
     threads.push_back(new boost::thread(thread_callback, c));
   }
 
-  while (generator.execute()) {
-#if 0
-    // fullcheck block (disabled upstream, kept as-is)
-#endif
-  }
+  while (generator.execute()) { }
 
-  // have to collect metrics now while the database was not yet closed
-  Metrics metrics;
-  generator.get_metrics(&metrics);
-
-  // per-thread op counts for fairness calculation
-  // thread_ops[i] = {insert_ops, find_ops, total_ops}
   struct ThreadOps {
     uint64_t insert_ops;
     uint64_t find_ops;
     uint64_t total_ops;
   };
   std::vector<ThreadOps> thread_ops;
-  {
-    Metrics m0;
-    generator.get_metrics(&m0);
-    thread_ops.push_back({m0.insert_ops, m0.find_ops,
-                          m0.insert_ops + m0.find_ops + m0.erase_ops});
-  }
 
-  // "add up" the metrics from the other threads and join the other threads
+  Metrics metrics;
+  generator.get_metrics(&metrics);
+  thread_ops.push_back({metrics.insert_ops, metrics.find_ops,
+                        metrics.insert_ops + metrics.find_ops + metrics.erase_ops});
+
   std::vector<boost::thread *>::iterator it;
   std::vector<Callable *>::iterator cit = callables.begin();
   for (it = threads.begin(); it != threads.end(); it++, cit++) {
@@ -1230,12 +1240,19 @@ run_single_test(Configuration *conf)
     thread_ops.push_back({m.insert_ops, m.find_ops,
                           m.insert_ops + m.find_ops + m.erase_ops});
     add_metrics(&metrics, &m);
+    if (m.insert_latency_min < metrics.insert_latency_min)
+      metrics.insert_latency_min = m.insert_latency_min;
+    if (m.find_latency_min < metrics.find_latency_min)
+      metrics.find_latency_min = m.find_latency_min;
+    if (m.insert_latency_max > metrics.insert_latency_max)
+      metrics.insert_latency_max = m.insert_latency_max;
+    if (m.find_latency_max > metrics.find_latency_max)
+      metrics.find_latency_max = m.find_latency_max;
     (*it)->join();
     delete *it;
     delete *cit;
   }
 
-  // reopen (if required)
   if (conf->reopen) {
     db->close_env();
     db->open_env();
@@ -1256,43 +1273,49 @@ run_single_test(Configuration *conf)
     printf("\n[OK] %s\n", conf->filename.c_str());
     if (!conf->quiet || conf->metrics) {
       printf("\ttotal elapsed time (sec)                 %f\n",
-                  metrics.elapsed_wallclock_seconds);
+             metrics.elapsed_wallclock_seconds);
       print_metrics(&metrics, conf);
     }
 
-    // ── Per-thread fairness (Jain's Index) ──────────────────────────────────
+    // ── Per-thread fairness (Jain's Index) ───────────────────────────────────
     int n = (int)thread_ops.size();
     printf("\n\t--- Per-thread fairness ---\n");
     printf("\t%-8s  %12s  %12s  %12s\n",
            "thread", "inserts", "finds", "total_ops");
 
-    // Jain accumulators: on total_ops, insert_ops, find_ops
+    // Compute average latencies once from the fully-aggregated metrics
+    double ins_avg = (metrics.insert_ops > 0)
+        ? metrics.insert_latency_total / (double)metrics.insert_ops : 0.0;
+    double fnd_avg = (metrics.find_ops > 0)
+        ? metrics.find_latency_total   / (double)metrics.find_ops   : 0.0;
+
     double sum_total = 0, sum_sq_total = 0;
     double sum_ins   = 0, sum_sq_ins   = 0;
     double sum_find  = 0, sum_sq_find  = 0;
 
     for (int i = 0; i < n; i++) {
-      printf("\t%-8d  %12lu  %12lu  %12lu\n",
-             i,
+      printf("\t%-8d  %12lu  %12lu  %12lu\n", i,
              (unsigned long)thread_ops[i].insert_ops,
              (unsigned long)thread_ops[i].find_ops,
              (unsigned long)thread_ops[i].total_ops);
-      double t = (double)thread_ops[i].total_ops;
+
+      // Lock hold time proxy: ops × average latency per op type
+      double hold = (double)thread_ops[i].insert_ops * ins_avg
+                  + (double)thread_ops[i].find_ops   * fnd_avg;
+      sum_total += hold;  sum_sq_total += hold * hold;
+
       double ins = (double)thread_ops[i].insert_ops;
       double fnd = (double)thread_ops[i].find_ops;
-      sum_total   += t;   sum_sq_total += t * t;
-      sum_ins     += ins; sum_sq_ins   += ins * ins;
-      sum_find    += fnd; sum_sq_find  += fnd * fnd;
+      sum_ins  += ins;  sum_sq_ins  += ins * ins;
+      sum_find += fnd;  sum_sq_find += fnd * fnd;
     }
 
-    // Jain's Fairness Index = (sum xi)^2 / (n * sum xi^2)
-    // guard against all-zero
     double jain_total = (sum_sq_total > 0)
         ? (sum_total * sum_total) / (n * sum_sq_total) : 1.0;
     double jain_ins   = (sum_sq_ins > 0)
-        ? (sum_ins * sum_ins)     / (n * sum_sq_ins)   : 1.0;
+        ? (sum_ins   * sum_ins)   / (n * sum_sq_ins)   : 1.0;
     double jain_find  = (sum_sq_find > 0)
-        ? (sum_find * sum_find)   / (n * sum_sq_find)  : 1.0;
+        ? (sum_find  * sum_find)  / (n * sum_sq_find)  : 1.0;
 
     printf("\n\tJain's fairness index (all ops):    %.6f  %s\n",
            jain_total, jain_total > 0.95 ? "[FAIR]" : "[UNFAIR]");
@@ -1301,7 +1324,6 @@ run_single_test(Configuration *conf)
     printf("\tJain's fairness index (finds):      %.6f  %s\n",
            jain_find,  jain_find  > 0.95 ? "[FAIR]" : "[UNFAIR]");
 
-    // min/max spread
     uint64_t min_t = thread_ops[0].total_ops, max_t = thread_ops[0].total_ops;
     for (int i = 1; i < n; i++) {
       if (thread_ops[i].total_ops < min_t) min_t = thread_ops[i].total_ops;
@@ -1311,11 +1333,11 @@ run_single_test(Configuration *conf)
            (unsigned long)min_t, (unsigned long)max_t,
            min_t > 0 ? (double)max_t / min_t : 0.0);
     printf("\t--- end fairness ---\n");
-    // ────────────────────────────────────────────────────────────────────────
   }
   else
     printf("\n[FAIL] %s\n", conf->filename.c_str());
-  return (ok);
+
+  return ok;
 }
 
 #ifdef UPS_WITH_BERKELEYDB
